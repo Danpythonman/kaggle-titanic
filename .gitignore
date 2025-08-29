@@ -1,0 +1,9 @@
+# Ignore everything by default
+*
+
+# Un-ignore the gitignore (this file)
+!.gitignore
+
+# Un-ignore the main notebook and script
+!titanic.ipynb
+!titanic.py
