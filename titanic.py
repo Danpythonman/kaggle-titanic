@@ -32,6 +32,7 @@ from torch import Tensor
 from sklearn.model_selection import train_test_split
 
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 PltAxes: typing.TypeAlias = typing.Union[typing.Sequence[Axes], typing.Sequence[typing.Sequence[Axes]], np.ndarray, Axes]
@@ -235,25 +236,38 @@ print(f'{df_in.shape=}, {df_out.shape=}')
 # To make this data cleaning process repeatable, we will collect the steps into a function so that we can perform it on the validation set.
 
 # %%
-def clean_data(df: pd.DataFrame) -> pd.DataFrame:
+def clean_data(df: pd.DataFrame, drop_columns: bool = True, keep_id: bool = False) -> pd.DataFrame:
     df_clean = df.copy()
 
-    df_clean = df_clean.drop(columns=['PassengerId', 'Name', 'Ticket'])
-
     df_clean['CabinStartChar'] = df_clean['Cabin'].apply(cabin_start_char)
-    df_clean = df_clean.drop(columns=['Cabin'])
 
     df_clean['FareLog'] = np.log1p(df_clean['Fare'])
     df_clean['FareLogZ'] = (df_clean['FareLog'] - df_clean['FareLog'].mean()) / df_clean['FareLog'].std()
-    df_clean = df_clean.drop(columns=['Fare', 'FareLog'])
 
     df_clean['Age'] = df_clean['Age'].fillna(df_clean['Age'].mean())
     df_clean['AgeZ'] = (df_clean['Age'] - df_clean['Age'].mean()) / df_clean['Age'].std()
-    df_clean = df_clean.drop(columns=['Age'])
+
+    non_dummy_columns = df_clean.columns
 
     df_clean = pd.get_dummies(df_clean, columns=['Pclass', 'Sex', 'SibSp', 'Parch', 'Embarked', 'CabinStartChar'])
 
-    df_clean = df_clean.astype(float)
+    dummy_columns = df_clean.columns.difference(non_dummy_columns)
+    feature_columns = ['FareLogZ', 'AgeZ'] + list(dummy_columns)
+
+    if 'Survived' in df_clean.columns:
+        feature_columns += ['Survived']
+
+    df_clean[feature_columns] = df_clean[feature_columns].astype(float)
+    if drop_columns:
+        if keep_id:
+            df_clean = df_clean[['PassengerId'] + feature_columns]
+        else:
+            df_clean = df_clean[feature_columns]
+    else:
+        if not keep_id:
+            df_clean.drop(columns=['PassengerId'])
+        else:
+            pass
 
     return df_clean
 
@@ -295,6 +309,8 @@ print(features)
 # ## Defining the Neural Network
 #
 # We have a 32-dimensional input vector, so the neural network will start with 33 inputs. We will treat this as a binary classification problem where we predict 1 (survived) or 0 (died).
+#
+# We start with a small neural network with three blocks consisting of linear -> batch norm -> GELU -> dropout, and one final linear layer to project back to 1-dimension.
 
 # %%
 model = nn.Sequential(
@@ -346,7 +362,7 @@ val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=BATCH_SIZE, shu
 model.to(device)
 criterion = nn.BCEWithLogitsLoss()
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.9)
 
 
 # %% [markdown]
@@ -421,7 +437,15 @@ def train(model: nn.Module, epochs: int):
 # We also define this plotting function to plot the details of the training process.
 
 # %%
-def training_plot(df_training_details: pd.DataFrame, losses: np.ndarray, learning_rates: np.ndarray, axes: PltAxes):
+def training_plot(df_training_details: pd.DataFrame, losses: np.ndarray, learning_rates: np.ndarray, fig: Figure):
+    axes = []
+    gs = gridspec.GridSpec(3, 2, figure=fig)
+    axes.append(fig.add_subplot(gs[0, :]))
+    axes.append(fig.add_subplot(gs[1, 0]))
+    axes.append(fig.add_subplot(gs[1, 1]))
+    axes.append(fig.add_subplot(gs[2, 0]))
+    axes.append(fig.add_subplot(gs[2, 1]))
+
     axes[0].scatter(np.arange(len(losses)), losses, alpha=0.5)
     axes[0].set_title('Loss over training')
     axes[0].set_xlabel('Iteration')
@@ -436,47 +460,52 @@ def training_plot(df_training_details: pd.DataFrame, losses: np.ndarray, learnin
     axes[1].grid(True)
     axes[1].legend()
 
-    axes[2].scatter(np.arange(df_training_details['train accuracy'].shape[0]), df_training_details['train accuracy'], label='training accuracy', alpha=0.5)
-    axes[2].scatter(np.arange(df_training_details['val accuracy'].shape[0]), df_training_details['val accuracy'], label='validation accuracy', alpha=0.5)
-    axes[2].set_title('Training and validation accuracy over training')
-    axes[2].set_xlabel('Iteration')
-    axes[2].set_ylabel('Accuracy')
+    axes[2].scatter(np.arange(len(learning_rates)), learning_rates, alpha=0.5)
+    axes[2].set_title('Learning rate over training')
+    axes[2].set_xlabel('Epoch')
+    axes[2].set_ylabel('Learning rate')
     axes[2].grid(True)
-    axes[2].legend()
 
     axes[3].scatter(np.arange(df_training_details['train accuracy'].shape[0]), df_training_details['train accuracy'], label='training accuracy', alpha=0.5)
     axes[3].scatter(np.arange(df_training_details['val accuracy'].shape[0]), df_training_details['val accuracy'], label='validation accuracy', alpha=0.5)
-    axes[3].set_title('Training and validation accuracy over training\nwith y-axis from 0 to 1')
-    axes[3].set_xlabel('Iteration'); axes[3].set_ylabel('Accuracy')
+    axes[3].set_title('Training and validation accuracy over training')
+    axes[3].set_xlabel('Iteration')
+    axes[3].set_ylabel('Accuracy')
     axes[3].grid(True)
     axes[3].legend()
-    axes[3].set_ylim([0, 1])
 
-    axes[4].scatter(np.arange(len(learning_rates)), learning_rates, alpha=0.5)
-    axes[4].set_title('Learning rate over training')
-    axes[4].set_xlabel('Epoch')
-    axes[4].set_ylabel('Learning rate')
+    axes[4].scatter(np.arange(df_training_details['train accuracy'].shape[0]), df_training_details['train accuracy'], label='training accuracy', alpha=0.5)
+    axes[4].scatter(np.arange(df_training_details['val accuracy'].shape[0]), df_training_details['val accuracy'], label='validation accuracy', alpha=0.5)
+    axes[4].set_title('Training and validation accuracy over training with y-axis from 0 to 1')
+    axes[4].set_xlabel('Iteration'); axes[3].set_ylabel('Accuracy')
     axes[4].grid(True)
+    axes[4].legend()
+    axes[4].set_ylim([0, 1])
 
 
 # %% [markdown]
-# Here we train the model.
+# Here we train the model for 15 epochs.
 
 # %%
-df_training_details, losses, learning_rates = train(model, epochs=15)
+df_training_details, losses, learning_rates = train(model, epochs=50)
+
+# %% [markdown]
+# The graphs below show the loss and accuracy throughout the 15 epochs, as well as the learning rate as it decays. Note that the model seems to peak around 80% accuracy on the validation set.
 
 # %%
 fig: Figure
 axes: PltAxes
-fig, axes = plt.subplots(1, 5, figsize=(35, 5))
-training_plot(df_training_details, losses, learning_rates, axes)
+fig = plt.figure(figsize=(15, 15))
+training_plot(df_training_details, losses, learning_rates, fig)
 plt.show()
 
 # %% [markdown]
 # ### Using a Larger Neural Network
+#
+# The larger model has seven blocks of linear -> batch norm -> GELU -> dropout, then a final linear layer. The largest layer in this model has 512 neurons, up from 96 neurons in the largest layer in the smaller model.
 
 # %%
-model = nn.Sequential(
+big_model = nn.Sequential(
     collections.OrderedDict([
         ('lin1', nn.Linear(32, 48)),
         ('norm1', nn.BatchNorm1d(48)),
@@ -517,18 +546,72 @@ model = nn.Sequential(
     ])
 )
 
-# %%
-model.to(device)
-criterion = nn.BCEWithLogitsLoss()
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.99)
+# %% [markdown]
+# To better accommodate the larger network, we set the learning rate scheduler decay rate to 0.99 so that we can train for more epochs.
 
 # %%
-df_training_details, losses, learning_rates = train(model, epochs=500)
+big_model.to(device)
+criterion = nn.BCEWithLogitsLoss()
+optimizer = torch.optim.AdamW(big_model.parameters(), lr=1e-3)
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.99)
+
+# %% [markdown]
+# Here we train the larger network.
+
+# %%
+df_training_details, losses, learning_rates = train(big_model, epochs=100)
+
+# %% [markdown]
+# Note that the larger model performs almost identically to the small model, indicating that to achieve better performance we would need to engineer better features than what we have.
 
 # %%
 fig: Figure
 axes: PltAxes
-fig, axes = plt.subplots(1, 5, figsize=(35, 5))
-training_plot(df_training_details, losses, learning_rates, axes)
+fig = plt.figure(figsize=(15, 15))
+training_plot(df_training_details, losses, learning_rates, fig)
 plt.show()
+
+# %% [markdown]
+# ## Saving the Model and Generating the Competition Submission
+#
+# We will save the smaller model (and use it for prediction) since it's performance is on par with the large model.
+
+# %%
+torch.save(model.state_dict(), './model/model.pth')
+print('Model saved')
+
+# %% [markdown]
+# We load the competition dataset and clean it.
+
+# %%
+df_submission = pd.read_csv('test.csv')
+df_submission = clean_data(df_submission, keep_id=True)
+df_submission.head()
+
+# %% [markdown]
+# Initially, we predict all passengers to have died, then we change it to survived on an individual basis according to the model's output.
+
+# %%
+submission_features = list(df_submission.columns)
+submission_features.remove('PassengerId')
+df_submission['Survived'] = 0
+
+# %% [markdown]
+# Here is where we run inference and find passengers that are likely to survive (according to the model).
+
+# %%
+model.eval()
+with torch.no_grad():
+    for idx, row in df_submission.iterrows():
+        X = torch.tensor(row[submission_features].values, dtype=torch.float32, device=device)
+        logits = model(X.unsqueeze(0))
+        predictions = (torch.sigmoid(logits.squeeze()) >= 0.5).long()
+        if predictions.item() == 1:
+            df_submission.loc[idx, 'Survived'] = 1
+
+# %% [markdown]
+# Export only the ID and survived columns to CSV.
+
+# %%
+df_submission = df_submission[['PassengerId', 'Survived']]
+df_submission.to_csv('./submission.csv', index=False)

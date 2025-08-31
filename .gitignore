@@ -4,12 +4,16 @@
 # Un-ignore the gitignore (this file)
 !.gitignore
 
-# Un-ignore the main notebook and script
+# Un-ignore the main notebook, script, and PDF
 !titanic.ipynb
 !titanic.py
+!titanic_notebook.pdf
 
 # Un-ignore Conda environment file
 !environment.yml
 
 # Un-ignore readme
 !README.md
+
+# Un-ignore submission CSV
+!submission.csv
